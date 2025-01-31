@@ -1,5 +1,5 @@
 use std::io::{self, ErrorKind::TimedOut, Read, Result};
-use std::str::from_utf8;
+use std::str::{from_utf8, FromStr};
 use std::thread;
 use std::time::{Duration, Instant};
 use std::{fs::File, io::BufReader};
@@ -39,11 +39,33 @@ const EP0_SET_DATA_LENGTH: u8 = 0x2;
 const EP0_FLUSH_CACHES: u8 = 0x3;
 const EP0_PROG_START: u8 = 0x4;
 
+const DRAM_BASE: usize = 0x0000_0000;
+const DRAM_RUN_BASE: u32 = DRAM_BASE as u32 + 0x0800_0000;
+
 const SRAM_BASE: usize = 0x8030_0000;
 const SRAM_RUN_BASE: u32 = SRAM_BASE as u32 + 0x0006_0000;
+
 const MASK_ROM_BASE: usize = 0x9120_0000;
 
 const CHUNK_SIZE: usize = 512;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Space {
+    Sram,
+    Dram,
+}
+
+impl FromStr for Space {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "sram" => Ok(Self::Sram),
+            "dram" => Ok(Self::Dram),
+            others => Err(format!("unknown space type {others}")),
+        }
+    }
+}
 
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -55,7 +77,11 @@ enum Command {
     Rom,
     /// Run binary code from file
     #[clap(verbatim_doc_comment)]
-    Run { file_name: String },
+    Run {
+        #[clap(long, short, default_value = "sram")]
+        space: Space,
+        file_name: String,
+    },
 }
 
 /// Kendryte mask ROM loader tool
@@ -183,10 +209,15 @@ fn main() {
     match cmd {
         Command::CpuInfo => {}
         Command::Rom => run_code(&i, MASK_ROM_BASE as u32),
-        Command::Run { file_name } => {
+        Command::Run { file_name, space } => {
             let input = File::open(file_name).unwrap();
+            let addr = if space == Space::Dram {
+                DRAM_RUN_BASE
+            } else {
+                SRAM_RUN_BASE
+            };
 
-            set_code_addr(&i, SRAM_RUN_BASE);
+            set_code_addr(&i, addr);
             let mut reader = BufReader::new(input);
             let mut buf = [0_u8; CHUNK_SIZE];
             loop {
@@ -210,7 +241,7 @@ fn main() {
                 };
             }
 
-            run_code(&i, SRAM_RUN_BASE);
+            run_code(&i, addr);
         }
     }
 }
