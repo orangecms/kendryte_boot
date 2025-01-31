@@ -33,7 +33,7 @@ fn claim_interface(d: &Device, ii: u8) -> std::result::Result<Interface, String>
     Err("failure claiming USB interface".into())
 }
 
-const ISP_STAGE1_CMD_GET_CPU_INFO: u8 = 0x0;
+const EP0_GET_CPU_INFO: u8 = 0x0;
 const EP0_SET_DATA_ADDRESS: u8 = 0x1;
 const EP0_SET_DATA_LENGTH: u8 = 0x2;
 const EP0_FLUSH_CACHES: u8 = 0x3;
@@ -100,7 +100,7 @@ fn cmd_in(i: &Interface, buf: &mut [u8], request: u8, val: u32) {
 
 fn dev_info(i: &Interface) {
     let mut buf = [0; 0x20];
-    cmd_in(i, &mut buf, ISP_STAGE1_CMD_GET_CPU_INFO, 0);
+    cmd_in(i, &mut buf, EP0_GET_CPU_INFO, 0);
     let reply = from_utf8(&buf).unwrap();
     println!("Device says: {reply}");
 }
