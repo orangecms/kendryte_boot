@@ -1,5 +1,5 @@
 use std::io::{self, ErrorKind::TimedOut, Read, Result};
-use std::str::{from_utf8, FromStr};
+use std::str::from_utf8;
 use std::thread;
 use std::time::{Duration, Instant};
 use std::{fs::File, io::BufReader};
@@ -39,33 +39,10 @@ const EP0_SET_DATA_LENGTH: u8 = 0x2;
 const EP0_FLUSH_CACHES: u8 = 0x3;
 const EP0_PROG_START: u8 = 0x4;
 
-const DRAM_BASE: usize = 0x0000_0000;
-const DRAM_RUN_BASE: u32 = DRAM_BASE as u32 + 0x0800_0000;
-
-const SRAM_BASE: usize = 0x8030_0000;
-const SRAM_RUN_BASE: u32 = SRAM_BASE as u32 + 0x0006_0000;
-
+const SRAM_RUN_BASE: &str = "0x80360000";
 const MASK_ROM_BASE: usize = 0x9120_0000;
 
 const CHUNK_SIZE: usize = 512;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Space {
-    Sram,
-    Dram,
-}
-
-impl FromStr for Space {
-    type Err = String;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "sram" => Ok(Self::Sram),
-            "dram" => Ok(Self::Dram),
-            others => Err(format!("unknown space type {others}")),
-        }
-    }
-}
 
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -75,11 +52,18 @@ enum Command {
     /// Jump back to mask ROM
     #[clap(verbatim_doc_comment)]
     Rom,
+    /// Load binary from file to memory
+    #[clap(verbatim_doc_comment)]
+    Load {
+        #[clap(long, short, value_parser=clap_num::maybe_hex::<u32>, default_value = SRAM_RUN_BASE)]
+        address: u32,
+        file_name: String,
+    },
     /// Run binary code from file
     #[clap(verbatim_doc_comment)]
     Run {
-        #[clap(long, short, default_value = "sram")]
-        space: Space,
+        #[clap(long, short, value_parser=clap_num::maybe_hex::<u32>, default_value = SRAM_RUN_BASE)]
+        address: u32,
         file_name: String,
     },
 }
@@ -166,6 +150,31 @@ fn run_code(i: &Interface, addr: u32) {
     cmd_out(i, EP0_PROG_START, addr);
 }
 
+fn load(i: &Interface, usb_out_addr: u8, addr: u32, file: &File) {
+    set_code_addr(&i, addr);
+    let mut reader = BufReader::new(file);
+    let mut buf = [0_u8; CHUNK_SIZE];
+    loop {
+        let len = reader.read(&mut buf[..]).unwrap();
+        if len == 0 {
+            break;
+        }
+        let _: Result<()> = {
+            let timeout = Duration::from_secs(5);
+            let fut = async {
+                let comp = i.bulk_out(usb_out_addr, buf[..len].to_vec()).await;
+                comp.status.map_err(io::Error::other)?;
+                Ok(())
+            };
+
+            block_on(fut.or(async {
+                Timer::after(timeout).await;
+                Err(TimedOut.into())
+            }))
+        };
+    }
+}
+
 fn main() {
     let cmd = Cli::parse().cmd;
 
@@ -209,39 +218,14 @@ fn main() {
     match cmd {
         Command::CpuInfo => {}
         Command::Rom => run_code(&i, MASK_ROM_BASE as u32),
-        Command::Run { file_name, space } => {
-            let input = File::open(file_name).unwrap();
-            let addr = if space == Space::Dram {
-                DRAM_RUN_BASE
-            } else {
-                SRAM_RUN_BASE
-            };
-
-            set_code_addr(&i, addr);
-            let mut reader = BufReader::new(input);
-            let mut buf = [0_u8; CHUNK_SIZE];
-            loop {
-                let len = reader.read(&mut buf[..]).unwrap();
-                if len == 0 {
-                    break;
-                }
-                // println!("send {len} bytes");
-                let _: Result<()> = {
-                    let timeout = Duration::from_secs(5);
-                    let fut = async {
-                        let comp = i.bulk_out(e_out_addr, buf[..len].to_vec()).await;
-                        comp.status.map_err(io::Error::other)?;
-                        Ok(())
-                    };
-
-                    block_on(fut.or(async {
-                        Timer::after(timeout).await;
-                        Err(TimedOut.into())
-                    }))
-                };
-            }
-
-            run_code(&i, addr);
+        Command::Load { file_name, address } => {
+            let data = File::open(file_name).unwrap();
+            load(&i, e_out_addr, address, &data);
+        }
+        Command::Run { file_name, address } => {
+            let data = File::open(file_name).unwrap();
+            load(&i, e_out_addr, address, &data);
+            run_code(&i, address);
         }
     }
 }
